@@ -1,0 +1,17 @@
+"""Dashboard user directory."""
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..db import get_db
+from ..models import User
+from ..schemas import UserOut
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.get("", response_model=list[UserOut])
+def list_users(db: Session = Depends(get_db)) -> list[UserOut]:
+    users = db.execute(select(User).order_by(User.display_name)).scalars().all()
+    return [UserOut.model_validate(user) for user in users]

@@ -1,0 +1,24 @@
+# Normalize line endings.
+#
+# The backend and frontend are developed on Windows but the Docker images run
+# Linux, so shell scripts and batch files must keep their native endings while
+# text files normalize to LF in the repository.
+
+* text=auto
+
+# Windows launcher: CRLF is required for cmd.exe batch parsing.
+*.bat text eol=crlf
+
+# Shell scripts must be LF, including inside the Docker images.
+*.sh text eol=lf
+*.py text eol=lf
+
+# Docker and nginx configuration.
+Dockerfile text eol=lf
+*.template text eol=lf
+*.conf text eol=lf
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.ico binary

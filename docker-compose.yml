@@ -1,0 +1,87 @@
+# AgentGuard full stack: backend API, dashboard, and database.
+#
+# Default profile uses SQLite (zero external dependencies) so the demo runs
+# with a single `docker compose up`. Use `--profile postgres` for the
+# production-shaped PostgreSQL deployment.
+
+name: agentguard
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: agentguard-backend
+    restart: unless-stopped
+    environment:
+      AGENTGUARD_HOST: 0.0.0.0
+      AGENTGUARD_PORT: "8000"
+      # SQLite is the default so the stack needs no external database.
+      AGENTGUARD_DATABASE_URL: ${AGENTGUARD_DATABASE_URL:-sqlite:///./data/agentguard.db}
+      AGENTGUARD_AUTH_REQUIRED: ${AGENTGUARD_AUTH_REQUIRED:-false}
+      AGENTGUARD_AUTH_SECRET: ${AGENTGUARD_AUTH_SECRET:-change-me-in-production}
+      AGENTGUARD_CORS_ORIGINS: ${AGENTGUARD_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
+      AGENTGUARD_SEED_DEMO_DATA: ${AGENTGUARD_SEED_DEMO_DATA:-true}
+      AGENTGUARD_APPROVAL_TTL_MINUTES: ${AGENTGUARD_APPROVAL_TTL_MINUTES:-240}
+      AGENTGUARD_RETENTION_DAYS: ${AGENTGUARD_RETENTION_DAYS:-90}
+      AGENTGUARD_MAX_PAYLOAD_BYTES: ${AGENTGUARD_MAX_PAYLOAD_BYTES:-65536}
+      AGENTGUARD_REDACT_SECRETS: ${AGENTGUARD_REDACT_SECRETS:-true}
+      AGENTGUARD_DECISION_RATE_LIMIT: ${AGENTGUARD_DECISION_RATE_LIMIT:-60}
+      AGENTGUARD_DECISION_RATE_WINDOW_SECONDS: ${AGENTGUARD_DECISION_RATE_WINDOW_SECONDS:-60}
+    volumes:
+      - backend-data:/app/data
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - agentguard
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: agentguard-frontend
+    restart: unless-stopped
+    environment:
+      # The dashboard talks to the API through the compose network.
+      BACKEND_HOST: backend
+      VITE_PROXY_TARGET: http://backend:8000
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      - backend
+    networks:
+      - agentguard
+
+  # Optional PostgreSQL profile: `docker compose --profile postgres up`.
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentguard-postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentguard}
+      POSTGRES_DB: ${POSTGRES_DB:-agentguard}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentguard} -d ${POSTGRES_DB:-agentguard}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - agentguard
+
+volumes:
+  backend-data:
+  postgres-data:
+
+networks:
+  agentguard:
+    driver: bridge

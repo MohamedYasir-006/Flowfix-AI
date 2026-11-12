@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Build output
+dist/
+build/
+*.egg-info/
+*.tsbuildinfo
+
+# Local databases and secrets
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+backend/data/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
