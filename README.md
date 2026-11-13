@@ -1,15 +1,29 @@
 # AgentGuard
 
-**AI-agent governance, security, and observability control plane.**
+**Multi-agent runtime security, workflow reliability, and failure-propagation
+intelligence.**
 
-AgentGuard is the layer that sits between an AI agent and the tools it can
-call. Every proposed tool action is authenticated, schema-validated,
-risk-scored, and checked against deterministic policy **before** the tool is
-allowed to run. High-impact actions pause for a human decision, and every
-outcome lands in an append-only, redacted audit trail.
+AgentGuard is the control plane between AI agents and the tools they can call.
+Every proposed action is authenticated, schema-validated, risk-scored, and
+checked against deterministic policy **before** it runs. V2 also evaluates the
+provenance and trustworthiness of the upstream information an action depends on,
+contains failing agents, tracks saga-style transactions, and explains the
+result. High-impact actions pause for a human decision, and every outcome lands
+in an append-only, redacted, hash-chained audit trail.
 
 > **The core proof:** an agent cannot perform a protected action unless
-> AgentGuard explicitly authorizes it.
+> AgentGuard explicitly authorizes it — and a policy `DENY` can never be
+> overridden by propagation, reliability, risk scoring, or an approval.
+
+V2 documentation:
+
+- [V2 architecture](Docs/V2_ARCHITECTURE.md)
+- [Security model and limitations](Docs/V2_SECURITY_MODEL.md)
+- [Failure-propagation semantics](Docs/FAILURE_PROPAGATION.md)
+- [AFPB benchmark methodology and verified run](Docs/AFPB_BENCHMARK.md)
+- [V2 API reference](Docs/API_V2.md)
+- [Migration guide](Docs/V2_MIGRATION.md)
+- [Final engineering report](Docs/V2_ENGINEERING_REPORT.md)
 
 ---
 
@@ -22,6 +36,7 @@ outcome lands in an append-only, redacted audit trail.
   - [Option B — Windows launcher](#option-b--windows-launcher)
   - [Option C — Local development](#option-c--local-development)
 - [Demo scenario](#demo-scenario)
+  - [V2 failure-propagation demo](#v2-failure-propagation-demo)
 - [Python SDK](#python-sdk)
 - [Policy engine](#policy-engine)
   - [Decision precedence](#decision-precedence)
@@ -29,11 +44,14 @@ outcome lands in an append-only, redacted audit trail.
   - [Example policy document](#example-policy-document)
   - [Example decision response](#example-decision-response)
 - [Architecture](#architecture)
+  - [V2 intelligence layer](#v2-intelligence-layer)
   - [System diagram](#system-diagram)
   - [Request lifecycle](#request-lifecycle)
   - [Critical security invariant](#critical-security-invariant)
   - [Data model](#data-model)
 - [API reference](#api-reference)
+  - [V1 endpoints](#v1-endpoints)
+  - [V2 endpoints](#v2-endpoints)
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Project structure](#project-structure)
@@ -53,10 +71,16 @@ struggle to:
 - Enforce consistent permissions across agents and tools.
 - Detect prompt injection, data leakage, unsafe tool calls, or policy violations.
 - Stop — or require approval for — high-impact actions.
+- Know whether the data an action depends on is valid, fresh, and from a
+  trustworthy producer.
+- Contain a failing agent before its bad output cascades into other agents and
+  workflows.
 - Investigate incidents with reliable traces and audit records.
 
 AgentGuard provides a single policy decision point with three possible
-outcomes for every action: **ALLOW**, **DENY**, or **REQUIRE_APPROVAL**.
+outcomes for every action: **ALLOW**, **DENY**, or **REQUIRE_APPROVAL**. V2 adds
+a second, deterministic question over the same action: **is its upstream
+evidence trustworthy, and what breaks if it is not?**
 
 ### Non-goals
 
@@ -83,6 +107,13 @@ outcomes for every action: **ALLOW**, **DENY**, or **REQUIRE_APPROVAL**.
 | **Dashboard** | Overview, Agents, Tools, Policies, Approvals, Activity, and Settings screens. |
 | **Python SDK** | Fail-closed interception. Timeouts, connection errors, malformed responses, and pending approvals all raise — nothing executes unless an explicit `ALLOW` is returned. |
 | **Rate limiting** | Fixed-window per-agent limiter on the decision endpoint. Exceeding it returns `429` with a `Retry-After` header. |
+| **V2 — Provenance** | Agent outputs are recorded with integrity hashes, parents, expiry, and validation status. Declarative validators and human verification produce auditable evidence. |
+| **V2 — Failure propagation** | The decision service walks the upstream artifact/dependency graph. Invalid, quarantined, expired, stale, conflicting, or unverified high-impact inputs restrict the action. It can only deny or require approval. |
+| **V2 — Reliability and containment** | Confidence-aware reliability scoring, automatic quarantine, circuit breakers, and an explicit recovery gate. Quarantined agents are denied before policy runs. |
+| **V2 — Transactions** | Saga-style step tracking with idempotency, partial-failure state, recovery plans, and explicitly approved compensation. Compensation is not claimed as guaranteed rollback. |
+| **V2 — Incidents and replay** | Incidents preserve origin, blast radius, and evidence. Timelines merge audit/artifact/risk/transaction events. What-if simulation is read-only. |
+| **V2 — Tenancy and audit integrity** | Tenant-scoped records derived from credentials, per-tenant SHA-256 audit hash chain, checkpoints, and export. |
+| **V2 — AFPB benchmark** | Eight real, isolated failure-propagation scenarios comparing policy-only ablation with the full V2 service. |
 
 ---
 
@@ -239,6 +270,39 @@ Execution log (proof of what actually ran):
 The execution log is the point: only the allowed tool ran. The script exits
 non-zero if the prohibited tool ever executes.
 
+### V2 failure-propagation demo
+
+The V1 demo proves policy enforcement. The V2 demo proves the additional
+runtime guarantees using real service code in an isolated temporary SQLite
+database (it does not touch your workspace database and does not execute tools):
+
+```bash
+cd backend
+python scripts/demo_v2.py
+```
+
+It verifies:
+
+1. an action depending on an `INVALID` upstream artifact is `DENY`ed;
+2. an `UNVERIFIED` high-impact input requires approval, and if the artifact
+   becomes `INVALID` after the human approval, the retry is denied with
+   `PROPAGATION_BLOCKED_AFTER_APPROVAL` and the approval is **not consumed**;
+3. a quarantined agent is denied before policy evaluation, then returns to
+   `ACTIVE` through the explicit recovery gate;
+4. a saga transaction reaches `RECOVERY_REQUIRED`, compensation waits for
+   approval, then completes and records per-step compensation status;
+5. the tenant audit hash chain verifies.
+
+Expected final line:
+
+```
+Result: 17 passed, 0 failed
+```
+
+See [FAILURE_PROPAGATION.md](Docs/FAILURE_PROPAGATION.md) and
+[V2_ARCHITECTURE.md](Docs/V2_ARCHITECTURE.md) for the semantics behind each
+check.
+
 ### Walkthrough in the dashboard
 
 1. Open <http://localhost:8080> → **Overview** shows active agents, actions
@@ -330,6 +394,48 @@ The SDK treats every non-authorizing outcome as "do not execute":
 - missing `action_id` → `KeyError` (response is invalid)
 - `REQUIRE_APPROVAL` → `ApprovalRequired`
 - `DENY` → `GuardDenied`
+
+### V2 workflow and provenance usage
+
+The SDK can create workflow context, record artifacts, and pass that context to
+the guarded call. Propagation is evaluated only when workflow context is
+supplied; V1 calls keep working unchanged.
+
+```python
+workflow = guard.create_workflow(name="refund-flow")
+execution = guard.start_workflow_execution(workflow["id"], external_key="case-42")
+agent_run = guard.start_agent_execution(execution["id"])
+
+artifact = guard.record_artifact(
+    artifact_type="customer_record",
+    name="beneficiary",
+    content={"account": "acct-1"},
+    workflow_execution_id=execution["id"],
+    agent_execution_id=agent_run["id"],
+)
+
+try:
+    result = call_guarded(
+        guard,
+        tool="send_email",
+        arguments={"to": "customer@example.com", "subject": "Hi", "body": "..."},
+        target="customer@example.com",
+        execute=send_email,
+        workflow_execution_id=execution["id"],
+        agent_execution_id=agent_run["id"],
+        input_artifact_ids=[artifact["id"]],
+    )
+except GuardDenied as exc:
+    # Includes propagation reasons such as INVALID_UPSTREAM_ARTIFACT.
+    print(exc.reason_codes)
+```
+
+Additional v2 methods include `validate_artifact`, `verify_artifact`,
+`artifact_lineage`, `downstream_impact`, `preview_risk`, `agent_health`,
+`agent_reliability`, `list_incidents`, `incident_report`, `what_if`,
+`create_transaction`, `start_transaction_step`, `complete_transaction_step`,
+`compensation_plan`, `verify_audit_chain`, and `run_afpb_benchmark`. The SDK
+version is `0.2.0`.
 
 ---
 
@@ -454,6 +560,47 @@ even when an allow rule matches.
 
 ## Architecture
 
+### V2 intelligence layer
+
+V2 keeps the modular monolith and adds deterministic intelligence around the
+existing policy decision point:
+
+```
+                    ┌──────────────────────────────────────────┐
+Agent action ──────►│  Identity + schema + payload checks      │
+                    └──────────────────┬───────────────────────┘
+                                       ▼
+                    ┌──────────────────────────────────────────┐
+                    │  Operational gate                        │
+                    │  quarantine / circuit breaker            │
+                    └──────────────────┬───────────────────────┘
+                                       ▼
+                    ┌──────────────────────────────────────────┐
+                    │  Workflow context + provenance edges      │
+                    └──────────────────┬───────────────────────┘
+                                       ▼
+                    ┌──────────────────────────────────────────┐
+                    │  Deterministic policy                    │
+                    │  explicit DENY always wins                │
+                    └──────────────────┬───────────────────────┘
+                                       ▼
+                    ┌──────────────────────────────────────────┐
+                    │  Failure propagation                     │
+                    │  NONE / REQUIRE_APPROVAL / DENY          │
+                    └──────────────────┬───────────────────────┘
+                                       ▼
+                    ┌──────────────────────────────────────────┐
+                    │  Reliability friction (approval only)     │
+                    │  explainable risk + incident + audit      │
+                    └──────────────────┬───────────────────────┘
+                                       ▼
+                         Effective decision (DENY final)
+```
+
+Propagation, reliability, containment, and risk aggregation can only restrict an
+action. They never turn a policy `DENY` into `ALLOW`. See
+[V2_ARCHITECTURE.md](Docs/V2_ARCHITECTURE.md).
+
 ### System diagram
 
 ```
@@ -503,25 +650,38 @@ even when an allow rule matches.
 4. The backend resolves the tool registration and the agent's environment.
 5. Arguments are checked against the tool's input schema; oversized payloads
    are rejected.
-6. Deterministic risk rules compute a risk category and reason list.
-7. The policy engine evaluates permissions and all active policy rules.
-8. The backend returns one of:
-   - `ALLOW` — the SDK may execute the tool.
-   - `DENY` — the SDK must not execute the tool.
-   - `REQUIRE_APPROVAL` — the SDK must pause; nothing executes yet.
-9. For approvals, the backend verifies the approver, payload hash, expiry, and
-   current policy before returning a fresh `ALLOW`.
-10. The SDK executes the approved action once and reports success/failure back.
-11. The audit event is finalized and becomes visible in the dashboard.
+6. The operational gate denies quarantined agents and open circuit breakers.
+7. Workflow context is validated and consumed artifacts are recorded as
+   provenance edges.
+8. Deterministic risk rules compute a risk category and reason list; the policy
+   engine evaluates permissions and all active policy rules.
+9. Failure propagation evaluates the trusted state of upstream artifacts and
+   producers. It can only leave the decision unchanged, require approval, or
+   deny.
+10. Reliability can add approval friction for workflow-scoped high-impact
+    actions. It cannot override a denial.
+11. The backend returns one of:
+    - `ALLOW` — the SDK may execute the tool.
+    - `DENY` — the SDK must not execute the tool.
+    - `REQUIRE_APPROVAL` — the SDK must pause; nothing executes yet.
+12. For approvals, the backend verifies the approver, payload hash, expiry,
+    current policy, **and current propagation state** before returning a fresh
+    `ALLOW`.
+13. The SDK executes the approved action once and reports success/failure back.
+14. The decision, risk evidence, and — for propagation denials — the incident
+    are recorded. The audit event is finalized and joins the tenant hash chain.
 
 ### Critical security invariant
 
 > **The tool must never execute merely because the agent asked for it.**
 >
 > Execution is permitted only after a valid `ALLOW` decision, or a valid
-> approval followed by a fresh policy check. The SDK must treat timeouts,
-> malformed responses, authentication failures, and policy-service errors as
-> non-authorizing outcomes.
+> approval followed by a fresh policy **and propagation** check. The SDK must
+> treat timeouts, malformed responses, authentication failures, and
+> policy-service errors as non-authorizing outcomes.
+>
+> **A policy `DENY` is final.** Propagation, reliability, risk scoring, and
+> approvals may make a decision stricter, never more permissive.
 
 A `REQUIRE_APPROVAL` response never returns an executable approval token to
 the agent. The SDK polls for status and then requests a fresh decision.
@@ -539,6 +699,16 @@ the agent. The SDK polls for status and then requests a fresh decision.
 | `audit_events` | Append-only decision, approval, execution, and admin records |
 | `settings` | Single-row workspace configuration |
 
+V2 adds tenant and intelligence tables: `organizations`, `workflows`,
+`workflow_executions`, `agent_executions`, `artifacts`, `validation_rules`,
+`artifact_validations`, `dependencies`, `agent_states`, `circuit_breakers`,
+`quarantine_events`, `reliability_snapshots`, `risk_assessments`, `incidents`,
+`notifications`, `transactions`, `transaction_steps`, `compensation_actions`,
+`policy_versions`, `audit_checkpoints`, and `benchmark_runs`. Existing tables
+gained additive `org_id` and approval workflow-context columns. See
+[V2_ARCHITECTURE.md](Docs/V2_ARCHITECTURE.md) and
+[V2_MIGRATION.md](Docs/V2_MIGRATION.md).
+
 Timestamps are stored as UTC ISO-8601 strings and IDs as UUID strings so the
 schema ports cleanly between SQLite and PostgreSQL.
 
@@ -547,7 +717,10 @@ schema ports cleanly between SQLite and PostgreSQL.
 ## API reference
 
 All endpoints are versioned under `/api/v1`. Full interactive documentation is
-available at `/api/docs`.
+available at `/api/docs`. See [API_V2.md](Docs/API_V2.md) for complete V2
+contracts and examples.
+
+### V1 endpoints
 
 ### Agents and tools
 
@@ -598,6 +771,26 @@ available at `/api/docs`.
 | `GET` / `PATCH` | `/settings` | Read / update workspace configuration |
 | `GET` | `/health` | Liveness and database check |
 
+### V2 endpoints
+
+| Area | Representative endpoints |
+| --- | --- |
+| Workflows | `POST/GET /workflows`, `POST /workflows/{id}/executions`, `GET /workflow-executions/{id}`, `POST .../pause`, `.../resume`, `GET .../graph`, `GET .../timeline` |
+| Artifacts | `POST/GET /artifacts`, `POST /artifacts/{id}/validate`, `POST /artifacts/{id}/verify`, `GET /artifacts/{id}/lineage`, `POST /artifacts/consumption` |
+| Validation rules | `POST/GET /validation-rules`, `DELETE /validation-rules/{id}` |
+| Dependencies | `POST/GET /dependencies`, `GET /dependencies/impact`, `GET /agents/{id}/impact` |
+| Risk preview | `POST /risk/evaluate` — read-only, labelled `PREVIEW_ONLY` |
+| Operations | `GET /agents/{id}/health`, `GET /reliability`, `GET /containment/circuits`, `POST /agents/{id}/quarantine`, `POST /agents/{id}/recovery/start`, `POST .../recovery/complete` |
+| Incidents | `GET /incidents`, `GET /incidents/summary`, `GET /incidents/{id}/report`, `POST /incidents/{id}/resolve`, `POST /incidents/what-if` |
+| Transactions | `POST/GET /transactions`, `GET /transactions/{id}/recovery-plan`, `POST .../steps/{ref}/start`, `.../complete`, `POST .../compensate` |
+| Benchmarks | `POST /benchmarks/afpb/run`, `GET /benchmarks/runs` |
+| Audit | `GET /audit/verify`, `POST /audit/checkpoint`, `GET /audit/checkpoints`, `GET /audit/events` |
+
+The decision endpoint also accepts optional `workflow_execution_id`,
+`agent_execution_id`, and `input_artifact_ids`. Responses add optional
+`explanation`, `risk_score`, `risk_assessment_id`, `propagation`, and
+`operational_status` fields.
+
 ### Evaluate request
 
 ```json
@@ -614,7 +807,8 @@ available at `/api/docs`.
 ```
 
 Optional fields: `environment`, `agent_id` (must match the credential),
-`approval_id`, `idempotency_key`.
+`approval_id`, `idempotency_key`, and the V2 workflow context
+`workflow_execution_id`, `agent_execution_id`, and `input_artifact_ids`.
 
 ---
 
@@ -637,6 +831,28 @@ All backend settings are environment variables prefixed `AGENTGUARD_`. See
 | `REDACT_SECRETS` | `true` | Redact secrets before persistence |
 | `RETENTION_DAYS` | `90` | Audit retention (stored; enforcement is a roadmap item) |
 
+V2 intelligence settings (all policy defaults, echoed in decision evidence):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PROPAGATION_MAX_DEPTH` | `12` | Maximum upstream traversal depth. |
+| `PROPAGATION_REPEATED_FAILURE_THRESHOLD` | `3` | Producer failure count treated as repeated failure. |
+| `CONTAINMENT_FAILURE_THRESHOLD` | `3` | Failures before quarantine/circuit open. |
+| `CIRCUIT_OPEN_SECONDS` | `60` | Cooldown before `OPEN → HALF_OPEN`. |
+| `RELIABILITY_WINDOW_DAYS` | `30` | Reliability observation window. |
+| `RELIABILITY_MIN_OBSERVATIONS` | `5` | Below this, level is `INSUFFICIENT` (never trusted). |
+| `RELIABILITY_MEDIUM_THRESHOLD` | `60.0` | Medium score threshold. |
+| `RELIABILITY_HIGH_THRESHOLD` | `80.0` | High score threshold. |
+| `RELIABILITY_PRIOR_MEAN` | `0.8` | Beta-style smoothing prior mean. |
+| `RELIABILITY_PRIOR_STRENGTH` | `5.0` | Smoothing prior strength. |
+| `ARTIFACT_DEFAULT_TTL_MINUTES` | `1440` | Default artifact TTL setting. |
+| `BENCHMARK_TIMEOUT_SECONDS` | `120` | Benchmark run timeout setting. |
+| `TRANSACTION_COMPENSATION_REQUIRES_APPROVAL` | `true` | Gate compensation behind explicit approval. |
+
+Per-tenant propagation effects are configurable through
+`settings.propagation_policy`; unknown keys are ignored. Effective values are
+returned in each propagation result.
+
 **Port mapping** (via the environment or `.env` at the repo root):
 
 | Variable | Default | Purpose |
@@ -658,8 +874,9 @@ All backend settings are environment variables prefixed `AGENTGUARD_`. See
 ## Testing
 
 ```bash
-# Backend: 133 tests — policy precedence, decisions, approvals,
-# API contract, rate limiting, SDK fail-closed behavior, import integrity
+# Backend: 171 tests — policy precedence, decisions, approvals,
+# API contract, rate limiting, SDK fail-closed behavior, import integrity,
+# and V2 provenance/propagation/containment/saga/tenancy/audit-chain invariants
 cd backend
 pip install -e ".[dev]"
 pytest
@@ -673,6 +890,14 @@ npm run build
 
 # Lint
 npm run lint
+
+# V2 end-to-end behavior demo (isolated database, no external tools)
+cd backend
+python scripts/demo_v2.py
+
+# V2 AFPB benchmark (via a running API)
+curl -X POST http://127.0.0.1:8000/api/v1/benchmarks/afpb/run \
+  -H "Content-Type: application/json" -d '{"suite":"AFPB","seed":7}'
 ```
 
 ### Test coverage areas
@@ -691,6 +916,18 @@ npm run lint
   execution on deny or pending approval, result reporting, approval polling.
 - **Import integrity** — every module imported in a fresh interpreter with all
   annotations resolved, which catches missing imports that local tests can mask.
+- **V2 provenance** — validation evidence, invalid status, lineage, integrity
+  and expiry behavior.
+- **V2 propagation** — invalid/quarantined upstream denial, unverified
+  high-impact approval, clean upstream control, post-approval re-denial.
+- **V2 containment** — quarantine denial, recovery authorization, unresolved
+  invalid output blocking release.
+- **V2 transactions** — idempotent creation, duplicate in-flight rejection,
+  partial failure, compensation approval and completion.
+- **V2 tenancy and audit** — cross-tenant context rejection, ignored
+  organization header, hash-chain verification, tamper detection, checkpoints.
+- **V2 API and benchmark** — health/reliability/audit/incident endpoints and a
+  real AFPB run through the test client.
 
 ### Acceptance checklist
 
@@ -707,6 +944,17 @@ npm run lint
 - [x] Every decision creates an audit record
 - [x] Secrets are redacted from stored events
 - [x] Dashboard roles prevent unauthorized approval
+- [x] Invalid upstream artifact denies a policy-allowed action
+- [x] Quarantined upstream producer denies a dependent action
+- [x] Unverified high-impact input requires approval
+- [x] Post-approval propagation denial does not consume the approval
+- [x] A quarantined agent is denied before policy evaluation
+- [x] Recovery refuses unresolved invalid outputs
+- [x] Partial transaction failure requires recovery
+- [x] Compensation requires explicit approval and records step status
+- [x] Cross-tenant workflow/artifact IDs are rejected
+- [x] Audit chain verifies and detects tampering
+- [x] AFPB scenario suite passes against real service code
 
 ---
 
@@ -714,54 +962,69 @@ npm run lint
 
 ```
 agentguard/
-├── backend/
-│   ├── app/
-│   │   ├── main.py              # FastAPI app, lifespan, exception handlers
-│   │   ├── config.py            # Environment-driven settings
-│   │   ├── db.py                # Engine, session factory, schema bootstrap
-│   │   ├── models.py            # SQLAlchemy models
-│   │   ├── schemas.py           # Pydantic request/response contracts
-│   │   ├── policy.py            # Deterministic policy engine
-│   │   ├── risk.py              # Explainable risk scoring
-│   │   ├── ratelimit.py         # Fixed-window rate limiter
-│   │   ├── redaction.py         # Secret redaction before persistence
-│   │   ├── validation.py        # Tool argument schema validation
-│   │   ├── security.py          # Credential hashing, token issuance
-│   │   ├── deps.py              # Auth dependencies and RBAC
-│   │   ├── errors.py            # Typed errors with reason codes
-│   │   ├── seed.py              # Demo workspace seed
-│   │   ├── routers/             # HTTP endpoints
-│   │   │   ├── agents.py  tools.py  policies.py
-│   │   │   ├── decisions.py  approvals.py  events.py
-│   │   │   ├── overview.py  auth.py  users.py  settings.py  health.py
-│   │   └── services/            # Business logic
-│   │       ├── agents.py  tools.py  policies.py
-│   │       ├── decisions.py  approvals.py  audit.py  settings.py
-│   ├── sdk/python/agentguard/   # Python SDK
-│   │   ├── client.py            # HTTP client, fail-closed
-│   │   ├── guard.py             # call_guarded, approval polling
-│   │   └── exceptions.py        # Exception hierarchy
-│   ├── scripts/
-│   │   ├── demo_agent.py        # Sample agent + mock tools
-│   │   └── demo_key.py          # Agent credential helper
-│   └── tests/                   # pytest suite
-├── frontend/
-│   ├── src/
-│   │   ├── pages/               # Overview, Agents, Tools, Policies,
-│   │   │                        #   Approvals, Activity, Settings
-│   │   ├── components/          # Layout, modal, UI primitives, toasts
-│   │   ├── api/                 # HTTP client, mock layer, data context
-│   │   ├── types/               # Shared TypeScript contracts
-│   │   └── styles/              # Design tokens
-│   ├── scripts/                 # Smoke test and Node loader hooks
-│   ├── Dockerfile
-│   └── nginx.conf.template      # Serves the SPA and proxies /api
-├── Docs/
-│   └── AgentGuard_Project_Blueprint.md   # Requirements, roadmap, threat model
-├── docker-compose.yml           # backend + frontend + optional postgres
-├── start.bat                    # Windows launcher
-├── .gitignore
-└── README.md
+|-- backend/
+|   |-- app/
+|   |   |-- main.py              # FastAPI app, lifespan, exception handlers
+|   |   |-- config.py            # Environment-driven settings (V1 + V2)
+|   |   |-- db.py                # Engine, session factory, schema bootstrap
+|   |   |-- migrations.py        # Additive, versioned V2 migrations
+|   |   |-- models.py            # V1 + V2 SQLAlchemy models
+|   |   |-- schemas.py           # V1 contracts + optional V2 decision fields
+|   |   |-- schemas_v2.py        # V2 workflow/provenance/ops contracts
+|   |   |-- policy.py            # Deterministic policy engine
+|   |   |-- risk.py              # V1 risk scoring
+|   |   |-- deps.py              # Auth, tenant resolution, RBAC
+|   |   |-- routers/             # V1 + V2 HTTP endpoints
+|   |   |   |-- agents.py  tools.py  policies.py  decisions.py
+|   |   |   |-- approvals.py  events.py  overview.py  auth.py
+|   |   |   |-- users.py  settings.py  health.py
+|   |   |   |-- workflows.py  artifacts.py  dependencies.py
+|   |   |   |-- risk.py  operations.py  incidents.py
+|   |   |   |-- transactions.py  benchmarks.py  audit.py
+|   |   |-- services/            # Business logic
+|   |       |-- agents.py  tools.py  policies.py  approvals.py
+|   |       |-- decisions.py     # Central decision point (V1 + V2)
+|   |       |-- provenance.py  dependencies.py  propagation.py
+|   |       |-- reliability.py  containment.py  risk_engine.py
+|   |       |-- incidents.py  transactions.py  benchmarks.py
+|   |       |-- audit.py         # Append-only events + hash chain
+|   |       |-- settings.py
+|   |-- sdk/python/agentguard/   # Python SDK 0.2.0
+|   |   |-- client.py            # Fail-closed HTTP client + V2 methods
+|   |   |-- guard.py             # call_guarded, approval polling, context
+|   |   |-- exceptions.py        # Exception hierarchy
+|   |-- scripts/
+|   |   |-- demo_agent.py        # V1 policy enforcement demo
+|   |   |-- demo_v2.py           # V2 propagation/containment/saga/audit demo
+|   |   |-- demo_key.py          # Agent credential helper
+|   |-- tests/                   # pytest suite (V1 + V2)
+|-- frontend/
+|   |-- src/
+|   |   |-- pages/               # Overview, Agents, Tools, Policies,
+|   |   |                        #   Approvals, Activity, Settings,
+|   |   |                        #   Operations, Provenance, Incidents,
+|   |   |                        #   Transactions, Benchmarks
+|   |   |-- components/          # Layout, modal, UI primitives, toasts
+|   |   |-- api/                 # HTTP client (v1 + v2), mock layer
+|   |   |-- types/               # Shared TypeScript contracts
+|   |   |-- styles/              # Design tokens
+|   |-- scripts/                 # Smoke test and Node loader hooks
+|   |-- Dockerfile
+|   |-- nginx.conf.template      # Serves the SPA and proxies /api
+|-- Docs/
+|   |-- AgentGuard_Project_Blueprint.md
+|   |-- PHASE0_REPOSITORY_AUDIT.md
+|   |-- V2_ARCHITECTURE.md
+|   |-- V2_SECURITY_MODEL.md
+|   |-- FAILURE_PROPAGATION.md
+|   |-- AFPB_BENCHMARK.md
+|   |-- API_V2.md
+|   |-- V2_MIGRATION.md
+|   |-- V2_ENGINEERING_REPORT.md
+|-- docker-compose.yml           # backend + frontend + optional postgres
+|-- start.bat                    # Windows launcher
+|-- .gitignore
+|-- README.md
 ```
 
 ---
@@ -780,6 +1043,20 @@ agentguard/
 - Client-supplied `agent_id` and `environment` are verified against the
   authenticated credential, never trusted.
 - Idempotency keys prevent duplicate decision records on retry.
+- V2 tenant identity is derived from the credential; organization headers are
+  ignored.
+- V2 approvals are revalidated against current policy **and current propagation
+  state** before execution.
+- V2 workflow context and artifact IDs are tenant-scoped; cross-tenant IDs are
+  rejected.
+- V2 containment denies quarantined agents before policy evaluation.
+- V2 recovery requires an authorized admin, explicit confirmation, and no
+  unresolved invalid outputs.
+- V2 audit events are hash-chained per tenant; checkpoints can be anchored
+  externally.
+
+See [V2_SECURITY_MODEL.md](Docs/V2_SECURITY_MODEL.md) for the full trust model,
+residual risks, and explicit limitations.
 
 ### Threat model
 
@@ -795,6 +1072,12 @@ agentguard/
 | Replay | One-time approval consumption, expiry, idempotency keys |
 | Policy bypass | Unregistered tools denied; gateway-side enforcement recommended |
 | Approval abuse | Payload hash binding and re-evaluation before execution |
+| Stale/invalid upstream data | Deterministic propagation over recorded provenance; deny or approval |
+| Failing agent cascade | Quarantine, circuit breakers, reliability friction, incidents |
+| Cross-tenant access | Credential-derived tenant; tenant-scoped lookups; ignored org header |
+| Duplicate external effects | Transaction idempotency and duplicate step rejection |
+| Audit tampering | Per-tenant hash chain, checkpoints, tamper detection (external anchoring required for stronger proof) |
+| Competing state transitions | Conditional SQL updates for containment and transaction state |
 
 ### Important limitation
 
@@ -802,6 +1085,12 @@ agentguard/
 directly.** AgentGuard governs calls that go through the SDK or the HTTP API.
 Protect the tool execution path itself — network egress controls and tool-side
 authorization — for defense in depth.
+
+**V2 limitations:** propagation can only reason over provenance the runtime
+records; validation proves rule conformance, not semantic truth; compensation is
+a new external operation, not a guaranteed rollback; and a hash chain detects
+tampering only when an external checkpoint is trusted. These are documented, not
+hidden.
 
 ---
 
@@ -823,16 +1112,31 @@ authorization — for defense in depth.
 - [ ] **PostgreSQL end-to-end validation** — the compose profile and portable
       schema exist, but only SQLite has been exercised in the running stack.
 
-### Release 2 — advanced governance
+### Release 2 - advanced governance (V2 delivered)
 
-- [ ] Multi-tenancy with tenant IDs on all records.
-- [ ] Optional model-assisted risk classification behind a defined timeout,
-      never allowed to override a deterministic deny.
-- [ ] Exportable audit records.
-- [ ] SIEM / alerting integrations.
-- [ ] Multi-approver and quorum rules.
-- [ ] Policy simulation and dry-run mode.
-- [ ] Additional agent-framework adapters.
+- [x] Multi-tenancy with tenant IDs on V2 records and additive legacy backfill.
+- [x] Tenant-scoped audit export.
+- [x] Provenance, validation, dependency graph, and failure propagation.
+- [x] Reliability scoring, containment, circuit breakers, and recovery gate.
+- [x] Saga-style transactions, idempotency, and approved compensation.
+- [x] Incidents, timelines, and read-only what-if simulation.
+- [x] Audit hash chain, checkpoints, and tamper detection.
+- [x] AFPB benchmark with a policy-only ablation and isolated execution.
+
+### Remaining gaps
+
+- [ ] **External audit anchoring** - checkpoints exist, but storing them in an
+      external append-only/WORM system is deployment work, not implemented here.
+- [ ] **Retention job** - `retention_days` is still stored but not enforced by a
+      purge job.
+- [ ] **Multi-approver and quorum rules.**
+- [ ] **SIEM / alerting integrations** - notifications exist; external delivery
+      does not.
+- [ ] **Optional model-assisted risk classification** behind a timeout, never
+      allowed to override a deterministic deny.
+- [ ] **Additional agent-framework adapters.**
+- [ ] **Distributed graph/state backend** - only if measured traversal or
+      multi-instance contention requires it.
 
 ---
 
@@ -852,8 +1156,12 @@ These informed the design; they are not claims of certification.
 
 ## Status
 
-MVP / demo-quality. The full requirements, roadmap, and threat model are in
-[`Docs/AgentGuard_Project_Blueprint.md`](Docs/AgentGuard_Project_Blueprint.md).
+AgentGuard V2 is implemented and verified in this repository: backend tests,
+frontend production build, SDK compilation, the V2 demo, and the AFPB benchmark.
+It remains a production-oriented engineering implementation, not a certified
+product. The full requirements, roadmap, and threat model are in
+[`Docs/AgentGuard_Project_Blueprint.md`](Docs/AgentGuard_Project_Blueprint.md);
+V2 behavior and limitations are in the V2 docs linked at the top.
 
-Build the MVP around one proof: **an agent cannot perform a protected action
-unless AgentGuard explicitly authorizes it.**
+Build around one proof: **an agent cannot perform a protected action unless
+AgentGuard explicitly authorizes it — and a `DENY` cannot be overridden.**

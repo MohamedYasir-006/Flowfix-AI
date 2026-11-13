@@ -175,6 +175,11 @@ class EvaluateRequest(BaseModel):
     idempotency_key: str | None = None
     # Optional, but when supplied it must match the authenticated agent.
     agent_id: str | None = None
+    # V2 workflow context. When supplied, the action is evaluated against the
+    # provenance/dependency graph in addition to action-level policy.
+    workflow_execution_id: str | None = None
+    agent_execution_id: str | None = None
+    input_artifact_ids: list[str] = Field(default_factory=list)
 
 
 class DecisionResponse(BaseModel):
@@ -185,6 +190,12 @@ class DecisionResponse(BaseModel):
     policy: PolicyRef | None = None
     approval_id: str | None = None
     expires_at: str | None = None
+    # V2 explainability. Optional so V1 clients remain compatible.
+    explanation: str = ""
+    risk_score: int | None = None
+    risk_assessment_id: str | None = None
+    propagation: dict[str, Any] | None = None
+    operational_status: str | None = None
 
 
 class ApprovalOut(BaseModel):

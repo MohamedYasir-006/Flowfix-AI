@@ -98,3 +98,42 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "ADMIN":
         raise ForbiddenError("Administrator role required")
     return user
+
+
+def get_org_id(
+    request: Request,
+    db: Session = Depends(get_db),
+    x_agent_key: str | None = Header(default=None, alias="X-Agent-Key"),
+    user: User | None = Depends(get_token_user),
+) -> str:
+    """Resolve the tenant for a read endpoint that accepts either credential.
+
+    Tenant identity always comes from the credential or the user record. A
+    client-supplied organization header is never trusted.
+    """
+    from .services import agents as agents_service
+
+    if x_agent_key:
+        agent = agents_service.authenticate(db, x_agent_key)
+        if agent is None:
+            raise UnauthorizedError("Missing or invalid agent API key")
+        return agent.org_id
+
+    if user is not None:
+        if user.status != "ACTIVE":
+            raise ForbiddenError("User is disabled")
+        return user.org_id
+
+    settings = get_settings()
+    if settings.auth_required:
+        raise UnauthorizedError("A valid bearer token or agent key is required")
+    admin = db.query(User).filter(User.role == "ADMIN").first()
+    if admin is None:
+        raise UnauthorizedError("No admin user is available")
+    return admin.org_id
+
+
+def require_admin_or_approver(user: User = Depends(get_current_user)) -> User:
+    if user.role not in ("ADMIN", "APPROVER"):
+        raise ForbiddenError("Administrator or approver role required")
+    return user

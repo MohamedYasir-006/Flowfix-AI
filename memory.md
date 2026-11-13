@@ -2,9 +2,11 @@
 
 Working notes for the AgentGuard build. The authoritative product requirements
 live in `Docs/AgentGuard_Project_Blueprint.md`; this file records what was
-actually built, what was broken, and what remains.
+actually built, what was broken, and what remains. V2 architecture and
+limitations are documented in `Docs/V2_ARCHITECTURE.md`,
+`Docs/V2_SECURITY_MODEL.md`, and the other V2 docs.
 
-Last updated: 2026-11-12
+Last updated: 2026-11-13
 
 ---
 
@@ -12,13 +14,18 @@ Last updated: 2026-11-12
 
 A control plane and runtime guardrail layer for AI agents. Every proposed tool
 action passes through AgentGuard before execution: authentication, schema
-validation, deterministic risk scoring, policy evaluation, and (when required)
-human approval. All outcomes are written to a redacted, append-only audit trail.
+validation, deterministic risk scoring, policy evaluation, provenance-aware
+failure propagation, containment checks, and (when required) human approval. All
+outcomes are written to a redacted, append-only, hash-chained audit trail.
 
 Core invariant: **a tool never executes merely because the agent asked for it.**
 Execution is permitted only after an explicit `ALLOW`, or a valid approval
-followed by a fresh policy check. Transport errors, timeouts, malformed
-responses, and auth failures are all non-authorizing.
+followed by a fresh policy **and propagation** check. Transport errors, timeouts,
+malformed responses, and auth failures are all non-authorizing.
+
+V2 adds a second invariant: **a policy `DENY` is final.** Propagation,
+reliability, risk aggregation, containment, and approvals may make a decision
+stricter, never more permissive.
 
 ---
 
@@ -28,39 +35,46 @@ responses, and auth failures are all non-authorizing.
 
 | Area | Status |
 | --- | --- |
-| Backend API | FastAPI, `/api/v1`, OpenAPI at `/api/openapi.json` |
-| Policy engine | Deterministic, blueprint §12.1 precedence, explainable reason codes |
+| Backend API | FastAPI, `/api/v1`, OpenAPI at `/api/openapi.json`; V1 + V2 routes |
+| Policy engine | Deterministic, blueprint §12.1 precedence, explainable reason codes; `DENY` final |
 | Policy editor | Create/edit drafts, publish versions; published versions immutable |
-| Risk scoring | Category + environment + destination signals, no model calls |
-| Approvals | Payload-hash bound, expiring, single-use, policy revalidated before execution |
-| Audit | Every decision / approval / execution / admin change, redacted |
+| Risk scoring | V1 signals + V2 explainable aggregation (policy, propagation, reliability, ops state) |
+| Approvals | Payload-hash bound, expiring, single-use; policy **and propagation** revalidated before execution |
+| Audit | Every decision / approval / execution / admin change, redacted; per-tenant SHA-256 chain + checkpoints |
 | Redaction | Configurable field list + secret patterns, applied before persistence |
 | Agent registry | CRUD, enable/disable, credential rotate, per-agent tool permissions |
 | Tool registry | CRUD with JSON-Schema-ish validation |
-| Dashboard | React + TS: Overview, Agents, Tools, Policies, Approvals, Activity, Settings |
-| Python SDK | Fail-closed client, `call_guarded`, approval polling |
-| Tests | 96 backend tests + SDK tests, all passing |
-| Rate limiting | Fixed-window per-agent limiter on the decision endpoint, 429 + Retry-After |
+| Dashboard | React + TS: V1 pages plus Agent health, Provenance, Incidents, Transactions, Benchmarks |
+| Python SDK | Fail-closed client 0.2.0, `call_guarded`, approval polling, V2 workflow/provenance/ops methods |
+| Tests | 171 backend tests passing; frontend production build passing |
+| Rate limiting | Fixed-window per-agent limiter on agent-authenticated endpoints, 429 + Retry-After |
 | Docker | `docker-compose.yml` (backend + frontend + optional postgres), both images build |
 | Windows launcher | `start.bat` — preflight, start, health-wait, open browser |
+| V2 provenance | Artifacts with integrity hash, parents, expiry, validation rules, human verification, lineage |
+| V2 failure propagation | Deterministic rule engine; invalid/quarantined/expired/stale/conflicting/unverified inputs restrict actions |
+| V2 containment | Quarantine, circuit breakers, explicit recovery gate, incidents, notifications |
+| V2 reliability | Confidence-aware smoothed score; `INSUFFICIENT` never implies trust |
+| V2 transactions | Saga step state machine, idempotency, recovery plan, approved compensation |
+| V2 tenancy | Credential-derived tenant, cross-tenant lookups rejected, org header ignored |
+| V2 benchmark | AFPB 8 scenarios, isolated DB, real service code; verified 8/8 |
 
 ### Known gaps (not yet done)
 
-- **Retention enforcement** — `retention_days` is stored and displayed but no
-  job purges expired audit events.
-- **Multi-tenancy** — single workspace only; no tenant IDs on records.
-- **Dashboard auth** — bearer tokens exist and `AUTH_REQUIRED` works, but the UI
-  has no login screen. It relies on the seeded-admin fallback when auth is off.
-- **User management API** — users are listed but cannot be created or edited.
+- **External audit anchoring** — checkpoints exist, but no external WORM/append-only
+  store is integrated. A privileged database rewrite is not prevented.
+- **Retention enforcement** — `retention_days` is stored but no purge job runs.
+- **Dashboard auth UI** — bearer tokens and `AUTH_REQUIRED` work, but the UI has
+  no login screen. It relies on the seeded-admin fallback when auth is off.
+- **User management API** — users can be listed but not created or edited.
 - **Tool create/edit UI** — tools are listed but not created from the dashboard.
-- **Postgres path untested end-to-end** — the compose profile exists and the
-  models are portable, but only SQLite has been exercised in the running stack.
+- **Postgres path untested end-to-end** — portable schema and compose profile
+  exist, but only SQLite has been exercised in this verification.
 - **No CI pipeline** — no GitHub Actions workflow.
 - **Rate limiter is process-local** — correct for one uvicorn worker; a
-  multi-instance deployment needs Redis.
-- **Browser-render verification** — the browser tooling in the build environment
-  timed out, so the dashboard was verified by HTTP (HTML + bundle + proxied API)
-  and the jsdom smoke test rather than a real browser. Worth one manual look.
+  multi-instance deployment needs a shared limiter such as Redis.
+- **Multi-approver/quorum and SIEM delivery** — not implemented.
+- **Benchmark scope** — eight synthetic scenarios; not a certification or a
+  production-traffic measurement.
 
 ---
 
@@ -137,6 +151,27 @@ These were real defects that only appeared when the code was actually executed.
     supply the host through the nginx `envsubst` template mechanism
     (`nginx.conf.template` + `ENV BACKEND_HOST=backend`).
 
+### V2 defects found and fixed
+
+12. **Missing `transaction_compensation_requires_approval` setting.**
+    The compensation service read a config attribute that did not exist on
+    `Settings`, so compensation approval would fail at runtime. Fix: added the
+    setting with a fail-safe default of `True`.
+13. **Compensation state machine could not resume from `WAITING_APPROVAL`.**
+    `request_compensation` only allowed failed/partial/completed transactions,
+    so an approval could never move `WAITING_APPROVAL → COMPENSATING`. Fix:
+    allow `WAITING_APPROVAL` as an input state and set step compensation
+    statuses explicitly on approval.
+14. **Post-approval propagation could be bypassed by missing context.**
+    The approved path must re-run propagation using the context stored on the
+    approval; otherwise a human decision could outlive an upstream failure.
+    Fix: re-evaluate with approval-bound workflow/agent/artifact context and do
+    not consume the approval when propagation denies.
+15. **Legacy test isolation deleted the wrong tenant.** The V2 test setup now
+    preserves only `org-default`, removes other organizations, and deletes all
+    registered tables in reverse metadata order so V2 state does not leak
+    between tests.
+
 ---
 
 ## 4. How to run it
@@ -190,10 +225,21 @@ set AGENTGUARD_BASE_URL=http://127.0.0.1:8000/api
 PYTHONPATH=../sdk/python python scripts/demo_agent.py
 ```
 
+### V2 demo (isolated, no external tools)
+
+```bash
+cd backend
+python scripts/demo_v2.py
+```
+
+Expected: `Result: 17 passed, 0 failed`. It verifies invalid-upstream denial,
+post-approval propagation denial without approval consumption, quarantine and
+recovery, compensation approval, and audit-chain verification.
+
 ### Tests
 
 ```bash
-cd backend && pytest                  # 83 tests
+cd backend && pytest                  # 171 tests
 cd frontend && npm run smoke          # renders the app, 18 assertions
 cd frontend && npm run build          # type-check + bundle
 ```
@@ -219,6 +265,16 @@ Environment variables, prefix `AGENTGUARD_`. Full list in
 | `REDACT_SECRETS` | `true` | Redact secrets before persistence |
 | `RETENTION_DAYS` | `90` | Stored but not yet enforced |
 
+V2 intelligence defaults (see `README.md` and `Docs/API_V2.md` for the full
+list): `PROPAGATION_MAX_DEPTH=12`,
+`PROPAGATION_REPEATED_FAILURE_THRESHOLD=3`,
+`CONTAINMENT_FAILURE_THRESHOLD=3`, `CIRCUIT_OPEN_SECONDS=60`,
+`RELIABILITY_WINDOW_DAYS=30`, `RELIABILITY_MIN_OBSERVATIONS=5`,
+`RELIABILITY_MEDIUM_THRESHOLD=60.0`, `RELIABILITY_HIGH_THRESHOLD=80.0`,
+`TRANSACTION_COMPENSATION_REQUIRES_APPROVAL=true`.
+Per-tenant propagation effects live in `settings.propagation_policy`; unknown
+keys are ignored and effective values are echoed in decision evidence.
+
 Ports (via `.env` or the environment): `BACKEND_PORT` (8000),
 `FRONTEND_PORT` (8080), `POSTGRES_PORT` (5432).
 
@@ -238,17 +294,32 @@ Ports (via `.env` or the environment): `BACKEND_PORT` (8000),
   arguments}))`. A changed payload cannot reuse an approval.
 - **Fail-closed SDK.** Every non-authorizing outcome raises. `call_guarded`
   executes the wrapped tool only after `ALLOW`, and reports the result back.
+- **V2 decision ordering.** identity/schema -> operational gate -> workflow
+  context -> policy -> propagation -> reliability friction -> risk/incidents ->
+  audit. Propagation/reliability/risk can only restrict.
+- **Provenance is relational.** `dependencies` edges plus
+  `parent_artifact_ids`; bounded BFS traversal. No graph database is used
+  because current workflows do not justify the operational cost.
+- **Containment is persisted state.** `agent_states` and `circuit_breakers`
+  use conditional SQL updates; quarantine and recovery are explicit and audited.
+- **Transactions record intent, not execution.** The service never runs tools or
+  compensation actions; it gates and records transitions. Compensation requires
+  explicit approval and is not guaranteed rollback.
+- **Audit chain is per tenant.** Canonical JSON + SHA-256, monotonic sequence,
+  checkpoint endpoint. External anchoring is required for stronger tamper proof.
+- **Migrations are additive and versioned.** `app/migrations.py` versions 1-6;
+  never renumber an applied version.
 
 ---
 
 ## 7. Repository / push notes
 
-- Not yet a git repository at the time of writing. Initialize with
-  `git init` before pushing.
+- The repository is initialized. All V2 work is currently in the working tree
+  and has not been committed since the initial repository commit.
 - `.gitignore` excludes `node_modules/`, `.venv/`, `*.db`, `.env`, and `dist/`.
-- `backend/agentguard.db` is a local SQLite file — **do not commit it.**
-- The repo link for pushing was not yet provided. Once given:
-  `git remote add origin <url>` then `git push -u origin main`.
+- `backend/agentguard.db` is a local SQLite file - **do not commit it.**
+- Before committing, review `git status` and `git diff`. Do not commit generated
+  databases, node_modules, `.env`, or build output.
 
 ---
 
@@ -256,22 +327,29 @@ Ports (via `.env` or the environment): `BACKEND_PORT` (8000),
 
 ```bash
 # 1. Backend unit + integration + SDK tests
-cd backend && pytest                     # 133 tests
+cd backend && pytest                     # 171 tests
 
-# 2. Frontend smoke test + production build
+# 2. V2 end-to-end behavior demo (isolated DB)
+cd backend && python scripts/demo_v2.py  # 17 checks
+
+# 3. Frontend smoke test + production build
 cd frontend && npm run smoke && npm run build
 
-# 3. Docker stack from a clean state
+# 4. Docker stack from a clean state
 docker compose down -v --remove-orphans
 docker compose up -d --build
 #    then check: http://localhost:8000/api/v1/health and http://localhost:8080/
 
-# 4. End-to-end enforcement (SDK demo against the container)
+# 5. End-to-end enforcement (SDK demo against the container)
 docker compose exec -T backend python -c "..."   # rotate agent-support key
 AGENTGUARD_API_KEY=<key> AGENTGUARD_BASE_URL=http://127.0.0.1:8000/api \
   PYTHONPATH=backend/sdk/python python backend/scripts/demo_agent.py
 
-# 5. Rate limiting (60 req/min; the 61st returns 429 + Retry-After)
+# 6. V2 AFPB benchmark (real service, isolated temp DB)
+curl -X POST http://localhost:8000/api/v1/benchmarks/afpb/run \
+  -H "Content-Type: application/json" -d '{"suite":"AFPB","seed":7}'
+
+# 7. Rate limiting (60 req/min; the 61st returns 429 + Retry-After)
 ```
 
 **Before debugging any client/server discrepancy, check for duplicate

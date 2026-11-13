@@ -28,6 +28,22 @@ class Settings(BaseSettings):
     decision_rate_limit: int = 60
     decision_rate_window_seconds: int = 60
 
+    # V2 intelligence defaults. These are policy defaults, not hidden switches:
+    # every effective rule is echoed in the decision evidence.
+    propagation_max_depth: int = 12
+    propagation_repeated_failure_threshold: int = 3
+    containment_failure_threshold: int = 3
+    circuit_open_seconds: int = 60
+    reliability_window_days: int = 30
+    reliability_min_observations: int = 5
+    reliability_medium_threshold: float = 60.0
+    reliability_high_threshold: float = 80.0
+    reliability_prior_mean: float = 0.8
+    reliability_prior_strength: float = 5.0
+    artifact_default_ttl_minutes: int = 1440
+    benchmark_timeout_seconds: int = 120
+    transaction_compensation_requires_approval: bool = True
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

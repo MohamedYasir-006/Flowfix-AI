@@ -11,7 +11,28 @@ from .config import get_settings
 from .db import init_db
 from .errors import ApiError
 from .ratelimit import RateLimiter
-from .routers import agents, approvals, auth, decisions, events, health, overview, policies, settings, tools, users
+from .routers import (
+    agents,
+    approvals,
+    artifacts,
+    audit,
+    auth,
+    benchmarks,
+    decisions,
+    dependencies,
+    events,
+    health,
+    incidents,
+    operations,
+    overview,
+    policies,
+    risk,
+    settings,
+    tools,
+    transactions,
+    users,
+    workflows,
+)
 from .seed import seed_demo_data
 
 
@@ -91,6 +112,18 @@ app.include_router(events.router, prefix=API_V1)
 app.include_router(overview.router, prefix=API_V1)
 app.include_router(users.router, prefix=API_V1)
 app.include_router(settings.router, prefix=API_V1)
+
+# V2 operational intelligence endpoints. Order matters where a static path and
+# a parameterized path share a prefix (for example /incidents/summary).
+app.include_router(workflows.router, prefix=API_V1)
+app.include_router(artifacts.router, prefix=API_V1)
+app.include_router(dependencies.router, prefix=API_V1)
+app.include_router(risk.router, prefix=API_V1)
+app.include_router(operations.router, prefix=API_V1)
+app.include_router(incidents.router, prefix=API_V1)
+app.include_router(transactions.router, prefix=API_V1)
+app.include_router(benchmarks.router, prefix=API_V1)
+app.include_router(audit.router, prefix=API_V1)
 
 
 @app.get("/api/v1/openapi.json", include_in_schema=False)

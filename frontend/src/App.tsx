@@ -7,6 +7,11 @@ import { AgentsPage } from '@/pages/AgentsPage'
 import { ToolsPage } from '@/pages/ToolsPage'
 import { PoliciesPage } from '@/pages/PoliciesPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { OperationsPage } from '@/pages/OperationsPage'
+import { IncidentsPage } from '@/pages/IncidentsPage'
+import { ProvenancePage } from '@/pages/ProvenancePage'
+import { TransactionsPage } from '@/pages/TransactionsPage'
+import { BenchmarksPage } from '@/pages/BenchmarksPage'
 
 export function AppRoutes() {
   return (
@@ -18,6 +23,11 @@ export function AppRoutes() {
         <Route path="agents" element={<AgentsPage />} />
         <Route path="tools" element={<ToolsPage />} />
         <Route path="policies" element={<PoliciesPage />} />
+        <Route path="operations" element={<OperationsPage />} />
+        <Route path="incidents" element={<IncidentsPage />} />
+        <Route path="provenance" element={<ProvenancePage />} />
+        <Route path="transactions" element={<TransactionsPage />} />
+        <Route path="benchmarks" element={<BenchmarksPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFound />} />
       </Route>

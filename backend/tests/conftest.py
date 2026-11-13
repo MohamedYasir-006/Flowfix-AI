@@ -10,17 +10,8 @@ import pytest
 # Ensure the backend package is importable when pytest runs from the repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.db import SessionLocal, init_db  # noqa: E402
-from app.models import (  # noqa: E402
-    Agent,
-    AgentToolPermission,
-    Approval,
-    AuditEvent,
-    Policy,
-    Settings,
-    Tool,
-    User,
-)
+from app.db import Base, SessionLocal, init_db  # noqa: E402
+from app.models import Agent  # noqa: E402
 from app.seed import seed_demo_data  # noqa: E402
 from app.security import generate_agent_key, hash_key  # noqa: E402
 
@@ -31,9 +22,20 @@ def db():
     init_db()
     session = SessionLocal()
     try:
-        # Reset to a known state for every test, children before parents.
-        for model in (AuditEvent, Approval, AgentToolPermission, Policy, Agent, Tool, Settings, User):
-            session.query(model).delete()
+        # Reset to a known state for every test. Delete every registered table
+        # in reverse dependency order so V2 tables added later are covered
+        # automatically. The organization row is infrastructure and is kept.
+        for table in reversed(Base.metadata.sorted_tables):
+            if table.name == "organizations":
+                continue
+            session.execute(table.delete())
+        # Keep the infrastructure organization; remove any tenant created by a
+        # prior test.
+        session.execute(
+            Base.metadata.tables["organizations"]
+            .delete()
+            .where(Base.metadata.tables["organizations"].c.id != "org-default")
+        )
         session.commit()
         seed_demo_data(session)
         yield session

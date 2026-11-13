@@ -22,6 +22,16 @@ const NAV = [
     ],
   },
   {
+    section: 'Operate',
+    items: [
+      { to: '/operations', label: 'Agent health', icon: IconAgent },
+      { to: '/provenance', label: 'Provenance', icon: IconPulse },
+      { to: '/incidents', label: 'Incidents', icon: IconShield },
+      { to: '/transactions', label: 'Transactions', icon: IconTool },
+      { to: '/benchmarks', label: 'Benchmarks', icon: IconCheck },
+    ],
+  },
+  {
     section: 'Workspace',
     items: [
       { to: '/settings', label: 'Settings', icon: IconSettings },

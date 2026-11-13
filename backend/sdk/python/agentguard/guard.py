@@ -50,6 +50,9 @@ def call_guarded(
     on_approval_required: Callable[[Decision], None] | None = None,
     approval_timeout: float = 0.0,
     poll_interval: float = 2.0,
+    workflow_execution_id: str | None = None,
+    agent_execution_id: str | None = None,
+    input_artifact_ids: list[str] | None = None,
 ) -> Any:
     """Evaluate a tool call, then execute it only when authorized.
 
@@ -68,6 +71,9 @@ def call_guarded(
         session_id=session_id,
         environment=environment,
         idempotency_key=idempotency_key,
+        workflow_execution_id=workflow_execution_id,
+        agent_execution_id=agent_execution_id,
+        input_artifact_ids=input_artifact_ids,
     )
 
     if decision.denied:
@@ -95,6 +101,9 @@ def call_guarded(
             environment=environment,
             approval_id=decision.approval_id,
             idempotency_key=idempotency_key,
+            workflow_execution_id=workflow_execution_id,
+            agent_execution_id=agent_execution_id,
+            input_artifact_ids=input_artifact_ids,
         )
         if decision.denied:
             raise GuardDenied(decision.reason_codes)

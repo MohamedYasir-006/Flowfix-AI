@@ -37,8 +37,14 @@ def create_approval(
     rule_id: str | None,
     reason: str,
     settings,
+    workflow_execution_id: str | None = None,
+    agent_execution_id: str | None = None,
+    input_artifact_ids: list[str] | None = None,
+    risk_assessment_id: str | None = None,
+    org_id: str = "org-default",
 ) -> Approval:
     approval = Approval(
+        org_id=org_id,
         action_id=action_id,
         payload_hash=payload_hash,
         requested_by_agent_id=agent_id,
@@ -52,6 +58,10 @@ def create_approval(
         policy_id=policy_id,
         policy_version=policy_version,
         rule_id=rule_id,
+        workflow_execution_id=workflow_execution_id,
+        agent_execution_id=agent_execution_id,
+        input_artifact_ids=list(input_artifact_ids or []),
+        risk_assessment_id=risk_assessment_id,
         created_at=utcnow(),
     )
     db.add(approval)
@@ -135,10 +145,21 @@ def decide(
     if approval.status != "PENDING":
         raise ValueError(f"Approval is already {approval.status.lower()}")
 
-    approval.status = decision.decision
-    approval.approver_user_id = approver_user_id
-    approval.decided_at = utcnow()
+    # Atomic transition: concurrent approvers cannot both decide.
+    result = db.execute(
+        update(Approval)
+        .where(Approval.id == approval.id, Approval.status == "PENDING")
+        .values(
+            status=decision.decision,
+            approver_user_id=approver_user_id,
+            decided_at=utcnow(),
+        )
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise ValueError("Approval was already decided")
     db.flush()
+    db.refresh(approval)
 
     record_event(
         db,
@@ -168,6 +189,6 @@ def consume(db: Session, approval: Approval) -> bool:
     result = db.execute(
         update(Approval)
         .where(Approval.id == approval.id, Approval.status == "APPROVED")
-        .values(status="CONSUMED")
+        .values(status="CONSUMED", consumed_at=utcnow())
     )
     return result.rowcount == 1

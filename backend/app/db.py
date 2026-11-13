@@ -43,8 +43,13 @@ def init_db() -> None:
 
     # Import models so their tables register on the shared metadata.
     from . import models  # noqa: F401
+    from .migrations import apply_migrations, ensure_default_organization
 
+    # Create missing tables (non-destructive), then evolve existing tables with
+    # recorded additive migrations. Neither step drops or rewrites data.
     Base.metadata.create_all(Engine)
+    apply_migrations(Engine)
+    ensure_default_organization(Engine)
 
 
 # Bind the factory at import time so ``from app.db import SessionLocal`` is
