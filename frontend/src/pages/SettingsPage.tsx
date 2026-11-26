@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useData } from '@/api/DataContext'
 import {
   Badge,
@@ -25,6 +25,17 @@ export function SettingsPage() {
     settings?.redactFields.join(', ') ?? DEFAULT_REDACT_FIELDS.join(', '),
   )
   const [busy, setBusy] = useState(false)
+  const initialized = useRef(false)
+
+  useEffect(() => {
+    if (!settings || initialized.current) return
+    initialized.current = true
+    setWorkspaceName(settings.workspaceName)
+    setRetentionDays(String(settings.retentionDays))
+    setApprovalTtl(String(settings.approvalTtlMinutes))
+    setMaxPayload(String(settings.maxPayloadBytes))
+    setRedactFields(settings.redactFields.join(', '))
+  }, [settings])
 
   if (!settings) return null
 

@@ -9,6 +9,7 @@ const NAV = [
     section: 'Monitor',
     items: [
       { to: '/', label: 'Overview', icon: IconGrid, end: true },
+      { to: '/fixflow', label: 'FixFlow AI', icon: IconTool },
       { to: '/activity', label: 'Activity', icon: IconPulse },
       { to: '/approvals', label: 'Approvals', icon: IconCheck, badge: 'pending' },
     ],
@@ -110,7 +111,7 @@ export function AppLayout() {
           </div>
           <p className="sidebar__note">
             {mode === 'mock'
-              ? 'Browsing seeded demo data. Point VITE_USE_MOCK=false at your FastAPI backend to go live.'
+              ? 'Browsing seeded demo data. Set VITE_USE_MOCK=false and restart to use the live API.'
               : 'Connected to the AgentGuard API.'}
           </p>
         </div>

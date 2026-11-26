@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from '@/components/layout'
 import { OverviewPage } from '@/pages/OverviewPage'
+import { FixFlowPage } from '@/pages/FixFlowPage'
 import { ActivityPage } from '@/pages/ActivityPage'
 import { ApprovalsPage } from '@/pages/ApprovalsPage'
 import { AgentsPage } from '@/pages/AgentsPage'
@@ -18,6 +19,7 @@ export function AppRoutes() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<OverviewPage />} />
+        <Route path="fixflow" element={<FixFlowPage />} />
         <Route path="activity" element={<ActivityPage />} />
         <Route path="approvals" element={<ApprovalsPage />} />
         <Route path="agents" element={<AgentsPage />} />

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,16 @@ class Settings(BaseSettings):
     auth_required: bool = False
     auth_secret: str = "dev-secret-change-me"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    # Local LLM via Ollama. These variables intentionally keep the standard
+    # OLLAMA_* names rather than the AGENTGUARD_ prefix so they match the
+    # Ollama client convention.
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        validation_alias="OLLAMA_BASE_URL",
+    )
+    ollama_model: str = Field(default="fixflow-llm", validation_alias="OLLAMA_MODEL")
+    ollama_timeout: float = Field(default=120.0, validation_alias="OLLAMA_TIMEOUT")
 
     approval_ttl_minutes: int = 240
     retention_days: int = 90

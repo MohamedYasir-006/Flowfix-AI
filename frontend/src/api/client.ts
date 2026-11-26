@@ -32,7 +32,7 @@ const BASE_URL = (
   '/api/v1'
 ).replace(/\/$/, '')
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${BASE_URL}${path}`, {
@@ -57,10 +57,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       detail = await response.text().catch(() => undefined)
     }
+    const contentType = response.headers.get('content-type') ?? ''
     const message =
-      typeof detail === 'object' && detail !== null && 'detail' in detail
-        ? String((detail as { detail: unknown }).detail)
-        : response.statusText
+      response.status === 404 && !contentType.includes('application/json')
+        ? `The server at ${BASE_URL} did not recognize ${path}. Check that the AgentGuard backend is running on the configured port and that the dev proxy targets it.`
+        : typeof detail === 'object' && detail !== null && 'detail' in detail
+          ? String((detail as { detail: unknown }).detail)
+          : response.statusText
     throw new ApiError(message || `Request failed (${response.status})`, response.status, detail)
   }
 
@@ -212,6 +215,48 @@ const toEvent = (d: EventDto): AuditEvent => ({
   createdAt: d.created_at,
 })
 
+interface OverviewStatsDto {
+  active_agents: number
+  total_agents: number
+  actions_today: number
+  blocked_today: number
+  pending_approvals: number
+  decisions_today: { allow: number; deny: number; requireApproval: number }
+  recent_events: EventDto[]
+}
+
+const toOverview = (d: OverviewStatsDto): OverviewStats => ({
+  activeAgents: d.active_agents,
+  totalAgents: d.total_agents,
+  actionsToday: d.actions_today,
+  blockedToday: d.blocked_today,
+  pendingApprovals: d.pending_approvals,
+  decisionsToday: d.decisions_today,
+  recentEvents: d.recent_events.map(toEvent),
+})
+
+interface SettingsDto {
+  workspace_name: string
+  default_environment: string
+  approval_ttl_minutes: number
+  retention_days: number
+  redact_secrets: boolean
+  redact_fields: string[]
+  require_approval_for: string[]
+  max_payload_bytes: number
+}
+
+const toSettings = (d: SettingsDto): Settings => ({
+  workspaceName: d.workspace_name,
+  defaultEnvironment: d.default_environment as Settings['defaultEnvironment'],
+  approvalTtlMinutes: d.approval_ttl_minutes,
+  retentionDays: d.retention_days,
+  redactSecrets: d.redact_secrets,
+  redactFields: d.redact_fields ?? [],
+  requireApprovalFor: (d.require_approval_for ?? []) as Settings['requireApprovalFor'],
+  maxPayloadBytes: d.max_payload_bytes,
+})
+
 const toUser = (d: User & Record<string, unknown>): User => ({
   id: String(d.id),
   email: String(d.email),
@@ -324,7 +369,8 @@ export const httpApi = {  async listAgents(): Promise<Agent[]> {
   },
 
   async overview(): Promise<OverviewStats> {
-    return request<OverviewStats>('/overview')
+    const data = await request<OverviewStatsDto>('/overview')
+    return toOverview(data)
   },
 
   async listUsers(): Promise<User[]> {
@@ -333,11 +379,25 @@ export const httpApi = {  async listAgents(): Promise<Agent[]> {
   },
 
   async getSettings(): Promise<Settings> {
-    return request<Settings>('/settings')
+    const data = await request<SettingsDto>('/settings')
+    return toSettings(data)
   },
 
   async updateSettings(patch: Partial<Settings>): Promise<Settings> {
-    return request<Settings>('/settings', { method: 'PATCH', body: JSON.stringify(patch) })
+    const body: Record<string, unknown> = {}
+    if (patch.workspaceName !== undefined) body.workspace_name = patch.workspaceName
+    if (patch.defaultEnvironment !== undefined) body.default_environment = patch.defaultEnvironment
+    if (patch.approvalTtlMinutes !== undefined) body.approval_ttl_minutes = patch.approvalTtlMinutes
+    if (patch.retentionDays !== undefined) body.retention_days = patch.retentionDays
+    if (patch.redactSecrets !== undefined) body.redact_secrets = patch.redactSecrets
+    if (patch.redactFields !== undefined) body.redact_fields = patch.redactFields
+    if (patch.requireApprovalFor !== undefined) body.require_approval_for = patch.requireApprovalFor
+    if (patch.maxPayloadBytes !== undefined) body.max_payload_bytes = patch.maxPayloadBytes
+    const data = await request<SettingsDto>('/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+    return toSettings(data)
   },
 
   resetDemoData() {
@@ -550,8 +610,8 @@ export function shouldUseMockData(): boolean {
   const flag =
     (import.meta.env?.VITE_USE_MOCK as string | undefined) ??
     (globalThis as { __AGENTGUARD_USE_MOCK__?: string }).__AGENTGUARD_USE_MOCK__
-  if (flag !== undefined) return flag !== 'false'
-  return true
+  if (flag !== undefined) return String(flag).toLowerCase() === 'true'
+  return false
 }
 
 let cached: Api | undefined

@@ -21,7 +21,12 @@ setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 REM --- Configuration ---------------------------------------------------------
-if "%BACKEND_PORT%"=="" set "BACKEND_PORT=8000"
+if "%BACKEND_PORT%"=="" (
+    set "BACKEND_PORT=8000"
+    set "BACKEND_PORT_EXPLICIT="
+) else (
+    set "BACKEND_PORT_EXPLICIT=1"
+)
 if "%FRONTEND_PORT%"=="" set "FRONTEND_PORT=8080"
 
 set "COMPOSE=docker compose"
@@ -45,6 +50,10 @@ goto :parse_args
 
 if "%MODE%"=="stop"  goto :stop
 if "%MODE%"=="clean" goto :clean
+
+call :resolve_backend_port
+if errorlevel 1 goto :fail
+
 if "%MODE%"=="local" goto :local
 
 if "%FRONTEND_PORT%"=="" set "FRONTEND_PORT=8080"
@@ -118,7 +127,7 @@ echo   start.bat --local             Start backend + frontend locally (no Docker
 echo   start.bat --help              Show this help
 echo.
 echo Environment:
-echo   BACKEND_PORT   Backend port (default 8000)
+echo   BACKEND_PORT   Backend port (default 8000; next free port is used when omitted)
 echo   FRONTEND_PORT  Frontend/dashboard port (Docker default 8080, local 5173)
 echo.
 goto :eof
@@ -179,7 +188,7 @@ if errorlevel 1 (
 where npm >nul 2>&1
 if errorlevel 1 (
     echo ERROR: npm is not installed or not on PATH.
-    echo Install Node.js (includes npm) and try again.
+    echo Install Node.js and npm, then try again.
     goto :fail
 )
 
@@ -214,7 +223,7 @@ echo [2/4] Starting backend (uvicorn)...
 start "AgentGuard Backend" cmd /k "cd /d "%CD%\backend" && set PYTHONPATH=%CD%\backend && "%PYTHON_EXE%" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT% --reload"
 
 echo [3/4] Starting frontend (Vite dev server)...
-start "AgentGuard Frontend" cmd /k "cd /d "%CD%\frontend" && set VITE_USE_MOCK=false && npm run dev -- --port %FRONTEND_PORT%"
+start "AgentGuard Frontend" cmd /k "cd /d "%CD%\frontend" && set VITE_USE_MOCK=false && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 
 echo [4/4] Waiting for backend health...
 call :wait_for_health
@@ -239,6 +248,46 @@ start "" "%DASHBOARD_URL%"
 goto :eof
 
 REM ===========================================================================
+:resolve_backend_port
+if defined BACKEND_PORT_EXPLICIT (
+    call :port_in_use %BACKEND_PORT%
+    if not errorlevel 1 (
+        echo.
+        echo ERROR: Backend port %BACKEND_PORT% is already in use.
+        echo Stop the process using it or set BACKEND_PORT to a free port.
+        echo.
+        exit /b 1
+    )
+    exit /b 0
+)
+
+set /a candidate=8000
+:resolve_port_loop
+call :port_in_use !candidate!
+if errorlevel 1 (
+    if not "!candidate!"=="8000" (
+        echo.
+        echo Port 8000 is busy; using backend port !candidate! instead.
+        echo.
+    )
+    set "BACKEND_PORT=!candidate!"
+    exit /b 0
+)
+set /a candidate+=1
+if !candidate! gtr 8020 (
+    echo.
+    echo ERROR: No free backend port found in 8000-8020.
+    echo Set BACKEND_PORT to a free port and try again.
+    echo.
+    exit /b 1
+)
+goto :resolve_port_loop
+
+:port_in_use
+powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort %~1 -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
+exit /b %errorlevel%
+
+REM ===========================================================================
 :wait_for_health
 set /a attempts=0
 :health_loop
@@ -252,7 +301,7 @@ if !attempts! gtr 90 (
         curl -s "%HEALTH_URL%"
         echo.
     )
-    echo Try: docker compose logs backend  (Docker) or check the backend window (local).
+    echo Try: docker compose logs backend for Docker, or check the backend window for local.
     exit /b 1
 )
 

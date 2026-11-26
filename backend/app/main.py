@@ -21,8 +21,10 @@ from .routers import (
     decisions,
     dependencies,
     events,
+    fixflow,
     health,
     incidents,
+    ollama,
     operations,
     overview,
     policies,
@@ -124,6 +126,8 @@ app.include_router(incidents.router, prefix=API_V1)
 app.include_router(transactions.router, prefix=API_V1)
 app.include_router(benchmarks.router, prefix=API_V1)
 app.include_router(audit.router, prefix=API_V1)
+app.include_router(ollama.router, prefix=API_V1)
+app.include_router(fixflow.router, prefix=API_V1)
 
 
 @app.get("/api/v1/openapi.json", include_in_schema=False)

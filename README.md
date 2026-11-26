@@ -197,12 +197,22 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```bash
 cd frontend
 npm install
-VITE_USE_MOCK=false npm run dev   # proxies /api to localhost:8000
+npm run dev                       # proxies /api to localhost:8000
 ```
 
-The dashboard defaults to an **in-browser demo dataset** so it works before the
-backend exists. Set `VITE_USE_MOCK=false` to bind it to the live API. The mode is
-shown in the sidebar footer.
+The dashboard connects to the **live AgentGuard API** by default. Set
+`VITE_USE_MOCK=true` to use the in-browser demo dataset when the backend is not
+running. The mode is shown in the sidebar footer.
+
+If port `8000` is already used by another application, either stop that process
+or start the backend on another port and point Vite at it:
+
+```bash
+VITE_PROXY_TARGET=http://127.0.0.1:8010 npm run dev
+```
+
+`start.bat --local` performs this port selection automatically and passes the
+chosen target to Vite.
 
 ---
 
@@ -865,7 +875,7 @@ returned in each propagation result.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VITE_USE_MOCK` | `true` | Use the in-browser demo dataset instead of the API |
+| `VITE_USE_MOCK` | `false` | Use the in-browser demo dataset instead of the API |
 | `VITE_API_BASE_URL` | `/api/v1` | API base URL |
 | `VITE_PROXY_TARGET` | `http://127.0.0.1:8000` | Dev-server proxy target |
 

@@ -143,6 +143,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setSettings(settingsValue)
       setOverview(overviewValue)
       setError(null)
+      await refreshEvents(eventFilters)
     } catch (e) {
       const err = e as Error
       setError(err.message)
@@ -150,7 +151,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false)
     }
-    await refreshEvents(eventFilters)
   }, [api, eventFilters, pushToast, refreshEvents])
 
   useEffect(() => {
@@ -159,9 +159,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    void refreshEvents(eventFilters)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventFilters])
+    void run(() => refreshEvents(eventFilters))
+  }, [eventFilters, refreshEvents, run])
 
   const createAgent: DataContextValue['createAgent'] = useCallback(
     async (input) => {
